@@ -855,24 +855,27 @@ class DemoGenerator:
     def gen_crm_leads(self, count):
         self._ensure_contacts(10)
         # Fetch CRM stages for distribution
-        stage_data = self.api.search_read('crm.stage', [], ['id'], limit=20)
-        stages = [s['id'] for s in stage_data] if stage_data else []
+        stage_data = self.api.search_read('crm.stage', [], ['id', 'is_won'], limit=20)
+        stages = [s for s in stage_data] if stage_data else []
         vals_list = []
         for _ in range(count):
             d = random.randint(0, DAYS_BACK)
             deadline = (datetime.now() - timedelta(days=d) + timedelta(days=random.randint(14, 120))).strftime('%Y-%m-%d')
             vals = {
                 'name': random.choice(CRM_NAMES),
+                'type': 'opportunity',
                 'partner_id': random.choice(self.ids['partner']),
                 'expected_revenue': round(random.uniform(5000, 150000), 2),
-                'probability': random.choice([10, 20, 30, 50, 70, 80, 90]),
                 'contact_name': fake.name(),
                 'email_from': fake.email(),
                 'phone': fake.phone_number(),
                 'date_deadline': deadline,
             }
             if stages:
-                vals['stage_id'] = random.choice(stages)
+                stage = random.choice(stages)
+                vals['stage_id'] = stage['id']
+                # Set probability based on stage
+                vals['probability'] = 100 if stage.get('is_won') else random.choice([10, 20, 30, 50, 70, 80, 90])
             vals_list.append(vals)
         ids = _as_list(self.api.create('crm.lead', vals_list))
         return len(ids)
