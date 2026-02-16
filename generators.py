@@ -440,7 +440,7 @@ class DemoGenerator:
                 'list_price': rm['price'],
                 'standard_price': rm['cost'],
                 'uom_id': uom,
-                'route_ids': [(6, 0, [buy_id])],
+                'route_ids': [(6, 0, [mto_id, buy_id])],
                 'image_1920': _product_image(rm['name']),
             })
             raw_tmpl_ids.append(tmpl_id)
