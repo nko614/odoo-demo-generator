@@ -676,15 +676,21 @@ class DemoGenerator:
 
     def gen_tasks(self, count):
         self._ensure_projects(5)
+        # Fetch task stages for distribution
+        stage_ids = self.api.search_read('project.task.type', [], ['id'], limit=20)
+        stages = [s['id'] for s in stage_ids] if stage_ids else []
         vals_list = []
         for _ in range(count):
             d = random.randint(0, DAYS_BACK)
             deadline = (datetime.now() - timedelta(days=d) + timedelta(days=random.randint(7, 90))).strftime('%Y-%m-%d')
-            vals_list.append({
+            vals = {
                 'name': random.choice(TASK_NAMES),
                 'project_id': random.choice(self.ids['project']),
                 'date_deadline': deadline,
-            })
+            }
+            if stages:
+                vals['stage_id'] = random.choice(stages)
+            vals_list.append(vals)
         ids = _as_list(self.api.create('project.task', vals_list))
         self.ids['task'].extend(ids)
         return len(ids)
@@ -848,11 +854,14 @@ class DemoGenerator:
 
     def gen_crm_leads(self, count):
         self._ensure_contacts(10)
+        # Fetch CRM stages for distribution
+        stage_data = self.api.search_read('crm.stage', [], ['id'], limit=20)
+        stages = [s['id'] for s in stage_data] if stage_data else []
         vals_list = []
         for _ in range(count):
             d = random.randint(0, DAYS_BACK)
             deadline = (datetime.now() - timedelta(days=d) + timedelta(days=random.randint(14, 120))).strftime('%Y-%m-%d')
-            vals_list.append({
+            vals = {
                 'name': random.choice(CRM_NAMES),
                 'partner_id': random.choice(self.ids['partner']),
                 'expected_revenue': round(random.uniform(5000, 150000), 2),
@@ -861,7 +870,10 @@ class DemoGenerator:
                 'email_from': fake.email(),
                 'phone': fake.phone_number(),
                 'date_deadline': deadline,
-            })
+            }
+            if stages:
+                vals['stage_id'] = random.choice(stages)
+            vals_list.append(vals)
         ids = _as_list(self.api.create('crm.lead', vals_list))
         return len(ids)
 
