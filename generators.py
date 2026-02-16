@@ -136,7 +136,7 @@ class DemoGenerator:
 
     # Always install these regardless of selections
     ALWAYS_INSTALL = [
-        'account_accountant', 'account', 'website', 'website_sale', 'payment_demo',
+        'accountant', 'account', 'website', 'website_sale', 'payment_demo',
         'sale_management', 'stock', 'mrp', 'purchase',
     ]
 
