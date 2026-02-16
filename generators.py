@@ -451,6 +451,7 @@ class DemoGenerator:
             'name': 'Smart Display Pro', 'type': 'consu', 'is_storable': True,
             'list_price': 499.00, 'standard_price': 280.00,
             'uom_id': uom, 'route_ids': [(6, 0, [mto_id, mfg_id])],
+            'invoice_policy': 'order',
             'image_1920': _product_image('Smart Display Pro'),
         }]
         all_tmpl_ids = _as_list(self.api.create('product.template', all_vals))
