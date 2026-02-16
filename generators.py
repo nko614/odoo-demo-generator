@@ -136,7 +136,7 @@ class DemoGenerator:
 
     # Always install these regardless of selections
     ALWAYS_INSTALL = [
-        'account_accountant', 'website', 'website_sale', 'payment_demo',
+        'account_accountant', 'account', 'website', 'website_sale', 'payment_demo',
         'sale_management', 'stock', 'mrp', 'purchase',
     ]
 
@@ -145,16 +145,24 @@ class DemoGenerator:
         for dtype, count in selections.items():
             if count > 0:
                 needed.update(self.MODULE_MAP.get(dtype, []))
-        # Find all uninstalled modules in one query
-        mod_ids = self.api.search(
+        # Check which modules exist and their state
+        all_mods = self.api.search_read(
             'ir.module.module',
-            [('name', 'in', list(needed)), ('state', '!=', 'installed')],
+            [('name', 'in', list(needed))],
+            ['name', 'state'],
         )
-        if not mod_ids:
+        found_names = {m['name'] for m in all_mods}
+        missing = needed - found_names
+        if missing:
+            print(f"  Modules not found in registry: {', '.join(sorted(missing))}")
+        already = [m['name'] for m in all_mods if m['state'] == 'installed']
+        if already:
+            print(f"  Already installed: {', '.join(sorted(already))}")
+        to_install = [m for m in all_mods if m['state'] != 'installed']
+        if not to_install:
             return []
-        # Read names for logging
-        mod_data = self.api.read('ir.module.module', mod_ids, ['name'])
-        names = [m['name'] for m in mod_data]
+        names = [m['name'] for m in to_install]
+        mod_ids = [m['id'] for m in to_install]
         for n in names:
             print(f"  Installing: {n}...")
         # Install all at once
