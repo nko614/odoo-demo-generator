@@ -136,7 +136,7 @@ class DemoGenerator:
 
     # Always install these regardless of selections
     ALWAYS_INSTALL = [
-        'account', 'website', 'website_sale', 'payment_demo',
+        'account_accountant', 'website', 'website_sale', 'payment_demo',
         'sale_management', 'stock', 'mrp', 'purchase',
     ]
 
@@ -145,18 +145,21 @@ class DemoGenerator:
         for dtype, count in selections.items():
             if count > 0:
                 needed.update(self.MODULE_MAP.get(dtype, []))
-        installed = []
-        for mod_name in sorted(needed):
-            mod_ids = self.api.search(
-                'ir.module.module',
-                [('name', '=', mod_name), ('state', '!=', 'installed')],
-                limit=1,
-            )
-            if mod_ids:
-                print(f"  Installing: {mod_name}...")
-                self.api.api_call('ir.module.module', 'button_immediate_install', [mod_ids])
-                installed.append(mod_name)
-        return installed
+        # Find all uninstalled modules in one query
+        mod_ids = self.api.search(
+            'ir.module.module',
+            [('name', 'in', list(needed)), ('state', '!=', 'installed')],
+        )
+        if not mod_ids:
+            return []
+        # Read names for logging
+        mod_data = self.api.read('ir.module.module', mod_ids, ['name'])
+        names = [m['name'] for m in mod_data]
+        for n in names:
+            print(f"  Installing: {n}...")
+        # Install all at once
+        self.api.api_call('ir.module.module', 'button_immediate_install', [mod_ids])
+        return names
 
     # -- Main generate (streaming) --
 
@@ -333,15 +336,20 @@ class DemoGenerator:
             return
         # Check availability
         self.api.api_call('stock.picking', 'action_assign', [picking_ids])
-        # Set done quantities on all moves
+        # Set done quantities on all moves — batch by same quantity to reduce API calls
         move_ids = self.api.search(
             'stock.move',
             [('picking_id', 'in', picking_ids), ('state', 'not in', ['done', 'cancel'])],
         )
         if move_ids:
             moves = self.api.read('stock.move', move_ids, ['product_uom_qty'])
+            # Group moves by quantity for batch writes
+            qty_groups = {}
             for m in moves:
-                self.api.write('stock.move', [m['id']], {'quantity': m['product_uom_qty']})
+                qty = m['product_uom_qty']
+                qty_groups.setdefault(qty, []).append(m['id'])
+            for qty, ids in qty_groups.items():
+                self.api.write('stock.move', ids, {'quantity': qty})
         # Validate — try batch first, fall back to individual
         ctx = {'skip_backorder': True, 'picking_ids_not_to_backorder': picking_ids}
         try:
@@ -357,21 +365,20 @@ class DemoGenerator:
 
     def _configure_settings(self):
         """Configure MTO route, automatic invoicing, and Demo payment provider."""
-        # Enable MTO route (may be archived by default)
-        mto_route = self.api.search(
+        # Find all routes in one query (including archived)
+        all_routes = self.api.search_read(
             'stock.route',
-            [('name', 'ilike', 'Replenish on Order')],
-            limit=1, context={'active_test': False},
+            [('name', 'ilike', '%order%')],
+            ['name'], context={'active_test': False},
         )
-        if not mto_route:
-            mto_route = self.api.search(
-                'stock.route',
-                [('name', 'ilike', 'Make To Order')],
-                limit=1, context={'active_test': False},
-            )
+        mto_route = None
+        for r in all_routes:
+            if 'replenish on order' in r['name'].lower() or 'make to order' in r['name'].lower():
+                mto_route = r['id']
+                break
         if mto_route:
-            self.api.write('stock.route', mto_route, {'active': True})
-            self._cache['mto_route'] = mto_route[0]
+            self.api.write('stock.route', [mto_route], {'active': True})
+            self._cache['mto_route'] = mto_route
             print("  MTO route enabled")
 
         # Enable automatic invoicing on online payment
@@ -385,15 +392,13 @@ class DemoGenerator:
             print(f"  Auto-invoice setting: {e}")
 
         # Enable Demo payment provider
-        demo = self.api.search('payment.provider', [('code', '=', 'demo')], limit=1)
-        if not demo:
-            demo = self.api.search(
-                'payment.provider',
-                [('name', 'ilike', 'demo')],
-                limit=1, context={'active_test': False},
-            )
+        demo = self.api.search_read(
+            'payment.provider',
+            ['|', ('code', '=', 'demo'), ('name', 'ilike', 'demo')],
+            ['name'], context={'active_test': False},
+        )
         if demo:
-            self.api.write('payment.provider', demo, {
+            self.api.write('payment.provider', [demo[0]['id']], {
                 'state': 'test',
                 'is_published': True,
             })
@@ -403,18 +408,23 @@ class DemoGenerator:
         """Create a finished good with MTO+Manufacture route, raw materials with Buy route, BOM, and vendors."""
         uom = self._get_uom_unit()
 
-        # Find routes
+        # Find routes — use cache or single batch query
         mto_id = self._cache.get('mto_route')
-        if not mto_id:
-            r = self.api.search('stock.route', [('name', 'ilike', 'Replenish on Order')], limit=1, context={'active_test': False})
-            if not r:
-                r = self.api.search('stock.route', [('name', 'ilike', 'Make To Order')], limit=1, context={'active_test': False})
-            mto_id = r[0] if r else None
-
-        buy_ids = self.api.search('stock.route', [('name', 'ilike', 'Buy')], limit=1)
-        mfg_ids = self.api.search('stock.route', [('name', 'ilike', 'Manufacture')], limit=1)
-        buy_id = buy_ids[0] if buy_ids else None
-        mfg_id = mfg_ids[0] if mfg_ids else None
+        buy_id = self._cache.get('buy_route')
+        mfg_id = self._cache.get('mfg_route')
+        if not all([mto_id, buy_id, mfg_id]):
+            routes = self.api.search_read('stock.route', [], ['name'], context={'active_test': False})
+            for r in routes:
+                name_l = r['name'].lower()
+                if not mto_id and ('replenish on order' in name_l or 'make to order' in name_l):
+                    mto_id = r['id']
+                elif not buy_id and name_l == 'buy':
+                    buy_id = r['id']
+                elif not mfg_id and name_l == 'manufacture':
+                    mfg_id = r['id']
+            self._cache['mto_route'] = mto_id
+            self._cache['buy_route'] = buy_id
+            self._cache['mfg_route'] = mfg_id
 
         if not all([mto_id, buy_id, mfg_id]):
             raise Exception(f'Missing routes: MTO={mto_id}, Buy={buy_id}, Manufacture={mfg_id}')
@@ -424,48 +434,40 @@ class DemoGenerator:
         vendors = [p for p in self.ids['partner']]
         vendor_id = vendors[0] if vendors else False
 
-        # Raw materials with Buy route
+        # Raw materials with MTO + Buy route — batch create
         raw_materials = [
             {'name': 'Processor Module', 'price': 85.00, 'cost': 52.00},
             {'name': 'Touch Display Panel', 'price': 145.00, 'cost': 88.00},
             {'name': 'Aluminum Enclosure', 'price': 35.00, 'cost': 18.00},
         ]
-        raw_tmpl_ids = []
-        raw_pp_ids = []
-        for rm in raw_materials:
-            tmpl_id = self.api.create('product.template', {
-                'name': rm['name'],
-                'type': 'consu',
-                'is_storable': True,
-                'list_price': rm['price'],
-                'standard_price': rm['cost'],
-                'uom_id': uom,
-                'route_ids': [(6, 0, [mto_id, buy_id])],
-                'image_1920': _product_image(rm['name']),
-            })
-            raw_tmpl_ids.append(tmpl_id)
-            pp = self.api.search('product.product', [('product_tmpl_id', '=', tmpl_id)])
-            raw_pp_ids.append(pp[0])
-            # Add vendor so auto-PO works
-            if vendor_id:
-                self.api.create('product.supplierinfo', {
-                    'product_tmpl_id': tmpl_id,
-                    'partner_id': vendor_id,
-                    'price': rm['cost'],
-                })
-
-        # Finished good with MTO + Manufacture routes
-        fg_tmpl_id = self.api.create('product.template', {
-            'name': 'Smart Display Pro',
-            'type': 'consu',
-            'is_storable': True,
-            'list_price': 499.00,
-            'standard_price': 280.00,
-            'uom_id': uom,
-            'route_ids': [(6, 0, [mto_id, mfg_id])],
+        raw_vals = [{
+            'name': rm['name'], 'type': 'consu', 'is_storable': True,
+            'list_price': rm['price'], 'standard_price': rm['cost'],
+            'uom_id': uom, 'route_ids': [(6, 0, [mto_id, buy_id])],
+            'image_1920': _product_image(rm['name']),
+        } for rm in raw_materials]
+        # Also create the finished good in the same batch
+        all_vals = raw_vals + [{
+            'name': 'Smart Display Pro', 'type': 'consu', 'is_storable': True,
+            'list_price': 499.00, 'standard_price': 280.00,
+            'uom_id': uom, 'route_ids': [(6, 0, [mto_id, mfg_id])],
             'image_1920': _product_image('Smart Display Pro'),
-        })
-        fg_pp = self.api.search('product.product', [('product_tmpl_id', '=', fg_tmpl_id)])
+        }]
+        all_tmpl_ids = _as_list(self.api.create('product.template', all_vals))
+        raw_tmpl_ids = all_tmpl_ids[:3]
+        fg_tmpl_id = all_tmpl_ids[3]
+
+        # Batch lookup product.product IDs
+        all_pp = self.api.search_read('product.product', [('product_tmpl_id', 'in', all_tmpl_ids)], ['product_tmpl_id'])
+        tmpl_to_pp = {d['product_tmpl_id'][0]: d['id'] for d in all_pp}
+        raw_pp_ids = [tmpl_to_pp[t] for t in raw_tmpl_ids]
+        fg_pp = [tmpl_to_pp[fg_tmpl_id]]
+
+        # Batch create vendor pricing
+        if vendor_id:
+            supplier_vals = [{'product_tmpl_id': tmpl_id, 'partner_id': vendor_id, 'price': rm['cost']}
+                             for tmpl_id, rm in zip(raw_tmpl_ids, raw_materials)]
+            self.api.create('product.supplierinfo', supplier_vals)
 
         # BOM
         bom_lines = [
@@ -544,11 +546,14 @@ class DemoGenerator:
         return len(tmpl_ids)
 
     def gen_employees(self, count):
-        # Pre-create departments
-        dept_ids = {}
-        for dept_name in DEPARTMENTS:
-            existing = self.api.search('hr.department', [('name', '=', dept_name)], limit=1)
-            dept_ids[dept_name] = existing[0] if existing else self.api.create('hr.department', {'name': dept_name})
+        # Pre-create departments — batch search + batch create
+        existing_depts = self.api.search_read('hr.department', [('name', 'in', DEPARTMENTS)], ['name'])
+        dept_ids = {d['name']: d['id'] for d in existing_depts}
+        missing_depts = [n for n in DEPARTMENTS if n not in dept_ids]
+        if missing_depts:
+            new_ids = _as_list(self.api.create('hr.department', [{'name': n} for n in missing_depts]))
+            for name, did in zip(missing_depts, new_ids):
+                dept_ids[name] = did
         vals_list = []
         for i in range(count):
             vals_list.append({
@@ -861,18 +866,23 @@ class DemoGenerator:
             raise Exception('No bank/cash account found for journal entries')
         bank_id = bank_ids[0]
 
-        # Cache account lookups: code -> id
-        account_cache = {}
+        # Pre-cache all needed accounts in one query
+        all_codes = list({t['account_code'] for t in JOURNAL_ENTRY_TEMPLATES})
+        all_types = list({t['account_type'] for t in JOURNAL_ENTRY_TEMPLATES})
+        accounts = self.api.search_read(
+            'account.account',
+            ['|', ('code', 'in', all_codes), ('account_type', 'in', all_types)],
+            ['code', 'account_type'],
+        )
+        code_to_id = {}
+        type_to_id = {}
+        for a in accounts:
+            code_to_id[a['code']] = a['id']
+            if a['account_type'] not in type_to_id:
+                type_to_id[a['account_type']] = a['id']
 
         def find_account(code, account_type):
-            if code in account_cache:
-                return account_cache[code]
-            ids = self.api.search('account.account', [('code', '=', code)], limit=1)
-            if not ids:
-                ids = self.api.search('account.account', [('account_type', '=', account_type)], limit=1)
-            aid = ids[0] if ids else None
-            account_cache[code] = aid
-            return aid
+            return code_to_id.get(code) or type_to_id.get(account_type)
 
         vals_list = []
         for _ in range(count):
@@ -940,11 +950,15 @@ class DemoGenerator:
         # Confirm manufacturing orders
         print("confirming...", end=' ', flush=True)
         self.api.api_call('mrp.production', 'action_confirm', [ids])
-        # Set qty_producing to full quantity on each MO
+        # Set qty_producing to full quantity — batch by same quantity
         print("producing...", end=' ', flush=True)
         mo_data = self.api.read('mrp.production', ids, ['product_qty'])
+        qty_groups = {}
         for mo in mo_data:
-            self.api.write('mrp.production', [mo['id']], {'qty_producing': mo['product_qty']})
+            qty = mo['product_qty']
+            qty_groups.setdefault(qty, []).append(mo['id'])
+        for qty, mo_ids in qty_groups.items():
+            self.api.write('mrp.production', mo_ids, {'qty_producing': qty})
         # Mark as done
         print("closing...", end=' ', flush=True)
         ctx = {'skip_consumption': True, 'skip_backorder': True}
@@ -1047,20 +1061,30 @@ class DemoGenerator:
 
     def gen_vehicles(self, count):
         self._ensure_employees(5)
-        # Pre-create brands and models
-        brand_cache = {}
-        model_cache = {}
         items = random.choices(VEHICLE_BRANDS_MODELS, k=count)
 
-        for brand_name, model_name in set(items):
-            if brand_name not in brand_cache:
-                existing = self.api.search('fleet.vehicle.model.brand', [('name', '=', brand_name)], limit=1)
-                brand_cache[brand_name] = existing[0] if existing else self.api.create('fleet.vehicle.model.brand', {'name': brand_name})
-            bid = brand_cache[brand_name]
-            mk = f'{brand_name}_{model_name}'
-            if mk not in model_cache:
-                existing = self.api.search('fleet.vehicle.model', [('name', '=', model_name), ('brand_id', '=', bid)], limit=1)
-                model_cache[mk] = existing[0] if existing else self.api.create('fleet.vehicle.model', {'name': model_name, 'brand_id': bid})
+        # Batch search/create brands
+        unique_brands = list({b for b, _ in items})
+        existing_brands = self.api.search_read('fleet.vehicle.model.brand', [('name', 'in', unique_brands)], ['name'])
+        brand_cache = {b['name']: b['id'] for b in existing_brands}
+        missing_brands = [b for b in unique_brands if b not in brand_cache]
+        if missing_brands:
+            new_ids = _as_list(self.api.create('fleet.vehicle.model.brand', [{'name': b} for b in missing_brands]))
+            for name, bid in zip(missing_brands, new_ids):
+                brand_cache[name] = bid
+
+        # Batch search/create models
+        unique_models = list({(b, m) for b, m in items})
+        model_names = [m for _, m in unique_models]
+        existing_models = self.api.search_read('fleet.vehicle.model', [('name', 'in', model_names)], ['name', 'brand_id'])
+        model_cache = {}
+        for m in existing_models:
+            model_cache[f"{m['brand_id'][1]}_{m['name']}"] = m['id']
+        missing_models = [(b, m) for b, m in unique_models if f'{b}_{m}' not in model_cache]
+        if missing_models:
+            new_ids = _as_list(self.api.create('fleet.vehicle.model', [{'name': m, 'brand_id': brand_cache[b]} for b, m in missing_models]))
+            for (b, m), mid in zip(missing_models, new_ids):
+                model_cache[f'{b}_{m}'] = mid
 
         # Get driver IDs from employees
         emp_data = self.api.read('hr.employee', self.ids['employee'], ['work_contact_id'])
