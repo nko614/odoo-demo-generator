@@ -253,22 +253,44 @@ h1 {
     transition: stroke-dashoffset 0.4s ease;
 }
 
+/* Spinning track behind the fill when working */
+.progress-ring-spinner {
+    fill: none;
+    stroke: #333;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-dasharray: 40 286.73;
+    stroke-dashoffset: 0;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.progress-ring.working .progress-ring-spinner {
+    opacity: 1;
+    animation: spinTrack 2s linear infinite;
+}
+
 .progress-ring.working .progress-ring-fill {
-    animation: ringPulse 1.8s ease-in-out infinite;
+    animation: ringPulse 2s ease-in-out infinite;
 }
 
 .progress-ring.working .progress-ring-bg {
-    animation: bgPulse 1.8s ease-in-out infinite;
+    animation: bgPulse 2s ease-in-out infinite;
+}
+
+@keyframes spinTrack {
+    0% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -326.73; }
 }
 
 @keyframes ringPulse {
     0%, 100% { stroke-opacity: 1; stroke-width: 6; }
-    50% { stroke-opacity: 0.5; stroke-width: 7; }
+    50% { stroke-opacity: 0.6; stroke-width: 8; }
 }
 
 @keyframes bgPulse {
     0%, 100% { stroke: #1a1a1a; }
-    50% { stroke: #252525; }
+    50% { stroke: #2a2a2a; }
 }
 
 .progress-ring-label {
@@ -281,6 +303,15 @@ h1 {
     font-weight: 700;
     color: #fff;
     font-variant-numeric: tabular-nums;
+}
+
+.progress-ring.working + .progress-ring-label {
+    animation: labelPulse 2s ease-in-out infinite;
+}
+
+@keyframes labelPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 
 .progress-info {
