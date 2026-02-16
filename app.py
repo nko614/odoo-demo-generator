@@ -61,4 +61,4 @@ def generate():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5055)
+    app.run(debug=True, port=5088)
