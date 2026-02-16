@@ -63,10 +63,12 @@ class OdooAPI:
             self.db, self.uid, self.api_key, model, 'search', [domain], kwargs
         )
 
-    def search_read(self, model, domain, fields, limit=0):
+    def search_read(self, model, domain, fields, limit=0, context=None):
         kwargs = {'fields': fields}
         if limit:
             kwargs['limit'] = limit
+        if context:
+            kwargs['context'] = context
         return self._models.execute_kw(
             self.db, self.uid, self.api_key, model, 'search_read', [domain], kwargs
         )
